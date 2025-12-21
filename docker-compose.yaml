@@ -1,0 +1,125 @@
+services:
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    hostname: kafka
+    container_name: kafka
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    environment:
+      KAFKA_KRAFT_MODE: "true" # Enables KRaft mode.
+      KAFKA_PROCESS_ROLES: controller,broker # Kafka acts as both controller and broker.
+      KAFKA_NODE_ID: 1 # Unique ID for the Kafka instance.
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@localhost:9093" # Controller quorum.
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LOG_DIRS: /var/lib/kafka/data # Log storage location.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true" # Enables automatic topic creation.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1 # Single replica for simplicity.
+      KAFKA_LOG_RETENTION_HOURS: 168 # Log retention period (7 days).
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0 # No rebalance delay.
+      CLUSTER_ID: "Mk3OEYBSD34fcwNTJENDM2Qk" # Unique Kafka cluster ID.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data:/var/lib/kafka/data # Maps logs to local storage.
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "kafka-broker-api-versions",
+          "--bootstrap-server",
+          "localhost:9092",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  # Unit tests (fast, mocked - no Kafka needed)
+  unit-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: ray-kafka-unit-tests
+    environment:
+      PYTHONUNBUFFERED: 1
+    volumes:
+      - ./src:/app/src
+      - ./tests:/app/tests
+      - ./pyproject.toml:/app/pyproject.toml
+    command: pytest tests/unit/ -v --color=yes
+    profiles:
+      - test
+
+  # Integration tests (require actual Kafka)
+  integration-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: ray-kafka-integration-tests
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      PYTHONUNBUFFERED: 1
+      RAY_DEDUP_LOGS: 0
+    volumes:
+      - ./src:/app/src
+      - ./tests:/app/tests
+      - ./integration_tests.py:/app/integration_tests.py
+      - ./pyproject.toml:/app/pyproject.toml
+    command: python integration_tests.py
+    profiles:
+      - integration
+
+  # Schema Registry (optional, for Avro/Protobuf support)
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.5.0
+    hostname: schema-registry
+    container_name: ray-kafka-schema-registry
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: "kafka:9092"
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+      SCHEMA_REGISTRY_LOG4J_ROOT_LOGLEVEL: WARN
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - schema
+
+  # Kafka Connect (optional, for connectors)
+  kafka-connect:
+    image: confluentinc/cp-kafka-connect:7.5.0
+    hostname: kafka-connect
+    container_name: ray-kafka-connect
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8083:8083"
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: "kafka:9092"
+      CONNECT_REST_ADVERTISED_HOST_NAME: kafka-connect
+      CONNECT_GROUP_ID: compose-connect-group
+      CONNECT_CONFIG_STORAGE_TOPIC: docker-connect-configs
+      CONNECT_OFFSET_STORAGE_TOPIC: docker-connect-offsets
+      CONNECT_STATUS_STORAGE_TOPIC: docker-connect-status
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_LOG4J_ROOT_LOGLEVEL: WARN
+    profiles:
+      - connect
