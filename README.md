@@ -50,6 +50,18 @@ write_kafka(
 )
 ```
 
+## How It Works
+
+1. **Per-Task Producers**: Each Ray task creates its own Kafka producer to avoid connection pool contention.
+
+2. **Asynchronous Writes**: Messages are produced asynchronously using `producer.produce()` with delivery callbacks.
+
+3. **Buffer Management**: When the producer queue fills, the sink polls for delivery reports and retries.
+
+4. **Batched Polling**: Delivery reports are polled every N records (configurable via `batch_size`) to balance throughput and responsiveness.
+
+5. **Final Flush**: A blocking flush ensures all messages are delivered before the task completes.
+
 ## API Reference
 
 ### KafkaDatasink
@@ -271,15 +283,3 @@ ray-kafka/
 ├── Makefile                    # Build and test commands
 └── pyproject.toml              # Project configuration
 ```
-
-## How It Works
-
-1. **Per-Task Producers**: Each Ray task creates its own Kafka producer to avoid connection pool contention.
-
-2. **Asynchronous Writes**: Messages are produced asynchronously using `producer.produce()` with delivery callbacks.
-
-3. **Buffer Management**: When the producer queue fills, the sink polls for delivery reports and retries.
-
-4. **Batched Polling**: Delivery reports are polled every N records (configurable via `batch_size`) to balance throughput and responsiveness.
-
-5. **Final Flush**: A blocking flush ensures all messages are delivered before the task completes.
