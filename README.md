@@ -227,7 +227,6 @@ make integration
 
 ### Docker Services
 
-```bash
 # Start Kafka only
 make up
 
