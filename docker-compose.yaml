@@ -49,7 +49,7 @@ services:
       - ./src:/app/src
       - ./tests:/app/tests
       - ./pyproject.toml:/app/pyproject.toml
-    command: pytest tests/unit/ -v --color=yes
+    command: pytest tests/ -v --color=yes
     profiles:
       - test
 

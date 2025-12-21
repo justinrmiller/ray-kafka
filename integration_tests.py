@@ -159,6 +159,8 @@ def test_basic_write():
         messages = consume_messages(topic, bootstrap_servers, len(data))
 
         assert len(messages) == len(data), f"Expected {len(data)} messages, got {len(messages)}"
+        for message in messages:
+            print(message)
         print(f"Consumed {len(messages)} messages")
 
         # Verify content
@@ -209,6 +211,8 @@ def test_write_with_keys():
         messages = consume_messages(topic, bootstrap_servers, len(data))
 
         assert len(messages) == len(data), f"Expected {len(data)} messages"
+        for message in messages:
+            print(message)
         print(f"Consumed {len(messages)} messages")
 
         # Verify all messages have keys
@@ -326,6 +330,8 @@ def test_string_serializer():
         )
 
         assert len(messages) == len(data)
+        for message in messages:
+            print(message)
         print(f"Consumed {len(messages)} string messages")
 
         # Verify all messages are strings containing expected content
@@ -374,6 +380,8 @@ def test_producer_config():
         time.sleep(2)
         messages = consume_messages(topic, bootstrap_servers, len(data))
         assert len(messages) == len(data)
+        for message in messages:
+            print(message)
         print(f"All {len(messages)} messages received")
 
         print("TEST PASSED: Producer Config\n")
@@ -414,6 +422,8 @@ def test_custom_batch_size():
         time.sleep(2)
         messages = consume_messages(topic, bootstrap_servers, len(data))
         assert len(messages) == len(data)
+        for message in messages:
+            print(message)
         print(f"All {len(messages)} messages received")
 
         print("TEST PASSED: Custom Batch Size\n")
@@ -451,6 +461,8 @@ def test_multiple_blocks():
         time.sleep(2)
         messages = consume_messages(topic, bootstrap_servers, num_records)
         assert len(messages) == num_records
+        for message in messages:
+            print(message)
         print(f"All {len(messages)} messages from multiple blocks received")
 
         print("TEST PASSED: Multiple Blocks\n")

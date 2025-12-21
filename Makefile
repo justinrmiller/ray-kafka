@@ -45,22 +45,6 @@ connect: up
 	@echo "Kafka Connect available at http://localhost:8083"
 	@echo ""
 
-logs:
-	docker-compose logs -f
-
-logs-kafka:
-	docker-compose logs -f kafka
-
-logs-tests:
-	docker-compose logs integration-tests
-
-# Local development (requires Kafka on localhost:9092)
-test-local:
-	uv run pytest tests/unit/ -v
-
-test-integration-local:
-	KAFKA_BOOTSTRAP_SERVERS=localhost:9092 uv run python integration_tests.py
-
 # Format and lint
 format:
 	uv run ruff format .
