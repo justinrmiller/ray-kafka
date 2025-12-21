@@ -484,7 +484,7 @@ def test_error_handling():
                 },
             )
             raise AssertionError("Should have raised an error")
-        except Exception as e:
+        except ray.exceptions.RayTaskError as e:
             print(f"Caught expected error: {type(e).__name__}")
 
         print("TEST PASSED: Error Handling\n")
