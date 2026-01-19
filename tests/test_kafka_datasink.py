@@ -4,7 +4,7 @@ import json
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
-from confluent_kafka import KafkaError, KafkaException
+from kafka.errors import KafkaError, KafkaTimeoutError
 
 from src.kafka_datasink import KafkaDatasink, write_kafka
 
@@ -250,13 +250,15 @@ class TestKeyExtraction:
 class TestWriteMethod:
     """Tests for the write method with mocked producer."""
 
-    @patch("src.kafka_datasink.Producer")
+    @patch("src.kafka_datasink.KafkaProducer")
     @patch("src.kafka_datasink.BlockAccessor")
     def test_write_basic(self, mock_accessor_class, mock_producer_class):
         """Test basic write functionality."""
         # Setup mocks
         mock_producer = MagicMock()
-        mock_producer.flush.return_value = 0
+        mock_future = MagicMock()
+        mock_future.get.return_value = MagicMock()  # Successful future
+        mock_producer.send.return_value = mock_future
         mock_producer_class.return_value = mock_producer
 
         mock_accessor = MagicMock()
@@ -278,17 +280,20 @@ class TestWriteMethod:
         result = sink.write(mock_blocks, mock_ctx)
 
         # Verify
-        assert mock_producer.produce.call_count == 2
+        assert mock_producer.send.call_count == 2
         assert mock_producer.flush.called
+        assert mock_producer.close.called
         assert result["total_records"] == 2
         assert result["failed_messages"] == 0
 
-    @patch("src.kafka_datasink.Producer")
+    @patch("src.kafka_datasink.KafkaProducer")
     @patch("src.kafka_datasink.BlockAccessor")
     def test_write_with_keys(self, mock_accessor_class, mock_producer_class):
         """Test write with key extraction."""
         mock_producer = MagicMock()
-        mock_producer.flush.return_value = 0
+        mock_future = MagicMock()
+        mock_future.get.return_value = MagicMock()
+        mock_producer.send.return_value = mock_future
         mock_producer_class.return_value = mock_producer
 
         mock_accessor = MagicMock()
@@ -307,19 +312,20 @@ class TestWriteMethod:
         _ = sink.write([Mock()], Mock())
 
         # Verify keys were passed
-        for call_args in mock_producer.produce.call_args_list:
+        for call_args in mock_producer.send.call_args_list:
             assert call_args[1]["key"] is not None
             assert isinstance(call_args[1]["key"], bytes)
 
-    @patch("src.kafka_datasink.Producer")
+    @patch("src.kafka_datasink.KafkaProducer")
     @patch("src.kafka_datasink.BlockAccessor")
     def test_write_buffer_error_retry(self, mock_accessor_class, mock_producer_class):
         """Test BufferError triggers retry."""
         mock_producer = MagicMock()
-        mock_producer.flush.return_value = 0
-        mock_producer.produce.side_effect = [
+        mock_future = MagicMock()
+        mock_future.get.return_value = MagicMock()
+        mock_producer.send.side_effect = [
             BufferError("Queue full"),
-            None,  # Retry succeeds
+            mock_future,  # Retry succeeds
         ]
         mock_producer_class.return_value = mock_producer
 
@@ -331,16 +337,16 @@ class TestWriteMethod:
 
         _ = sink.write([Mock()], Mock())
 
-        # Should have called poll and retried
-        assert mock_producer.poll.called
-        assert mock_producer.produce.call_count == 2
+        # Should have called flush and retried
+        assert mock_producer.flush.called
+        assert mock_producer.send.call_count == 2
 
-    @patch("src.kafka_datasink.Producer")
+    @patch("src.kafka_datasink.KafkaProducer")
     @patch("src.kafka_datasink.BlockAccessor")
-    def test_write_kafka_exception(self, mock_accessor_class, mock_producer_class):
-        """Test KafkaException handling."""
+    def test_write_kafka_timeout_error(self, mock_accessor_class, mock_producer_class):
+        """Test KafkaTimeoutError handling."""
         mock_producer = MagicMock()
-        mock_producer.produce.side_effect = KafkaException(KafkaError(KafkaError._MSG_TIMED_OUT))
+        mock_producer.send.side_effect = KafkaTimeoutError("Timeout")
         mock_producer_class.return_value = mock_producer
 
         mock_accessor = MagicMock()
@@ -353,17 +359,39 @@ class TestWriteMethod:
             sink.write([Mock()], Mock())
 
         # Verify cleanup
-        assert mock_producer.flush.called
+        assert mock_producer.close.called
 
-    @patch("src.kafka_datasink.Producer")
+    @patch("src.kafka_datasink.KafkaProducer")
     @patch("src.kafka_datasink.BlockAccessor")
-    def test_write_batching(self, mock_accessor_class, mock_producer_class):
-        """Test that batching triggers polling."""
+    def test_write_kafka_error(self, mock_accessor_class, mock_producer_class):
+        """Test KafkaError handling."""
         mock_producer = MagicMock()
-        mock_producer.flush.return_value = 0
+        mock_producer.send.side_effect = KafkaError("Kafka error")
         mock_producer_class.return_value = mock_producer
 
-        # Create 150 rows to trigger batch polling at 100
+        mock_accessor = MagicMock()
+        mock_accessor.iter_rows.return_value = [{"id": 1}]
+        mock_accessor_class.for_block.return_value = mock_accessor
+
+        sink = KafkaDatasink("test-topic", "localhost:9092")
+
+        with pytest.raises(RuntimeError, match="Failed to write to Kafka"):
+            sink.write([Mock()], Mock())
+
+        # Verify cleanup
+        assert mock_producer.close.called
+
+    @patch("src.kafka_datasink.KafkaProducer")
+    @patch("src.kafka_datasink.BlockAccessor")
+    def test_write_batching(self, mock_accessor_class, mock_producer_class):
+        """Test that batching triggers flushing."""
+        mock_producer = MagicMock()
+        mock_future = MagicMock()
+        mock_future.get.return_value = MagicMock()
+        mock_producer.send.return_value = mock_future
+        mock_producer_class.return_value = mock_producer
+
+        # Create 150 rows to trigger batch flushing at 100
         rows = [{"id": i} for i in range(150)]
         mock_accessor = MagicMock()
         mock_accessor.iter_rows.return_value = rows
@@ -377,16 +405,18 @@ class TestWriteMethod:
 
         result = sink.write([Mock()], Mock())
 
-        # Should have polled at 100 records
-        assert mock_producer.poll.call_count >= 1
+        # Should have flushed at 100 records plus final flush
+        assert mock_producer.flush.call_count >= 2
         assert result["total_records"] == 150
 
-    @patch("src.kafka_datasink.Producer")
+    @patch("src.kafka_datasink.KafkaProducer")
     @patch("src.kafka_datasink.BlockAccessor")
     def test_write_custom_callback(self, mock_accessor_class, mock_producer_class):
         """Test custom delivery callback is used."""
         mock_producer = MagicMock()
-        mock_producer.flush.return_value = 0
+        mock_future = MagicMock()
+        mock_future.get.return_value = MagicMock()
+        mock_producer.send.return_value = mock_future
         mock_producer_class.return_value = mock_producer
 
         mock_accessor = MagicMock()
@@ -402,16 +432,18 @@ class TestWriteMethod:
 
         sink.write([Mock()], Mock())
 
-        # Verify callback was passed
-        call_args = mock_producer.produce.call_args[1]
-        assert call_args["callback"] == callback
+        # Verify callbacks were added to future
+        assert mock_future.add_callback.called
+        assert mock_future.add_errback.called
 
-    @patch("src.kafka_datasink.Producer")
+    @patch("src.kafka_datasink.KafkaProducer")
     @patch("src.kafka_datasink.BlockAccessor")
     def test_write_producer_config(self, mock_accessor_class, mock_producer_class):
         """Test producer config is passed correctly."""
         mock_producer = MagicMock()
-        mock_producer.flush.return_value = 0
+        mock_future = MagicMock()
+        mock_future.get.return_value = MagicMock()
+        mock_producer.send.return_value = mock_future
         mock_producer_class.return_value = mock_producer
 
         mock_accessor = MagicMock()
@@ -427,11 +459,11 @@ class TestWriteMethod:
 
         sink.write([Mock()], Mock())
 
-        # Verify config
-        config = mock_producer_class.call_args[0][0]
-        assert config["bootstrap.servers"] == "localhost:9092"
-        assert config["acks"] == "all"
-        assert config["retries"] == 5
+        # Verify config - kafka-python uses keyword args
+        call_kwargs = mock_producer_class.call_args[1]
+        assert call_kwargs["bootstrap_servers"] == "localhost:9092"
+        assert call_kwargs["acks"] == "all"
+        assert call_kwargs["retries"] == 5
 
 
 class TestDeliveryCallback:
@@ -442,16 +474,16 @@ class TestDeliveryCallback:
         sink = KafkaDatasink("test", "localhost:9092")
 
         # Should not raise
-        sink._default_delivery_callback(None, Mock())
+        sink._default_delivery_callback(metadata=Mock())
 
     def test_default_delivery_callback_error(self):
         """Test default callback with delivery error."""
         sink = KafkaDatasink("test", "localhost:9092")
 
-        error = KafkaError(KafkaError._MSG_TIMED_OUT)
+        error = Exception("Delivery failed")
 
-        with pytest.raises(KafkaException, match="Message delivery failed"):
-            sink._default_delivery_callback(error, Mock())
+        with pytest.raises(KafkaError, match="Message delivery failed"):
+            sink._default_delivery_callback(exception=error)
 
 
 class TestWriteKafkaHelper:

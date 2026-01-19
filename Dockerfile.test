@@ -19,7 +19,7 @@ RUN pip install --no-cache-dir uv
 # Install dependencies (packaging is required for Ray 2.9.0)
 RUN uv pip install --system \
     "ray[data]==2.53.0" \
-    "confluent-kafka==2.12.2" \
+    "kafka-python>=2.0.2" \
     "pytest==9.0.2" \
     "pytest-mock==3.15.1"
 

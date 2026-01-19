@@ -1,5 +1,5 @@
 """
-Integration tests that actually write to Kafka using confluent-kafka.
+Integration tests that actually write to Kafka using kafka-python.
 Run with: docker-compose --profile integration run integration-tests
 Or locally: KAFKA_BOOTSTRAP_SERVERS=localhost:9092 python integration_tests.py
 """
@@ -10,51 +10,53 @@ import time
 from typing import Any
 
 import ray
-from confluent_kafka import Consumer, KafkaError
-from confluent_kafka.admin import AdminClient, NewTopic
+from kafka import KafkaConsumer
+from kafka.admin import KafkaAdminClient, NewTopic
+from kafka.errors import TopicAlreadyExistsError, UnknownTopicOrPartitionError
 
 from src.kafka_datasink import write_kafka
 
 
 def setup_topic(topic_name: str, bootstrap_servers: str, num_partitions: int = 1) -> None:
     """Create topic if it doesn't exist."""
-    admin = AdminClient({"bootstrap.servers": bootstrap_servers})
+    admin = KafkaAdminClient(bootstrap_servers=bootstrap_servers)
 
-    # Check if topic exists
-    metadata = admin.list_topics(timeout=10)
+    try:
+        # Check if topic exists
+        existing_topics = admin.list_topics()
 
-    if topic_name not in metadata.topics:
-        topic = NewTopic(
-            topic_name,
-            num_partitions=num_partitions,
-            replication_factor=1,
-            config={"retention.ms": "3600000"},  # 1 hour retention for tests
-        )
-        fs = admin.create_topics([topic])
-
-        # Wait for operation to complete
-        for topic, f in fs.items():
-            try:
-                f.result()
-                print(f"Created topic: {topic}")
-            except Exception as e:
-                print(f"Failed to create topic {topic}: {e}")
-                raise
-    else:
+        if topic_name not in existing_topics:
+            topic = NewTopic(
+                name=topic_name,
+                num_partitions=num_partitions,
+                replication_factor=1,
+            )
+            admin.create_topics([topic])
+            print(f"Created topic: {topic_name}")
+        else:
+            print(f"Topic already exists: {topic_name}")
+    except TopicAlreadyExistsError:
         print(f"Topic already exists: {topic_name}")
+    except Exception as e:
+        print(f"Failed to create topic {topic_name}: {e}")
+        raise
+    finally:
+        admin.close()
 
 
 def delete_topic(topic_name: str, bootstrap_servers: str) -> None:
     """Delete topic for cleanup."""
-    admin = AdminClient({"bootstrap.servers": bootstrap_servers})
-    fs = admin.delete_topics([topic_name], operation_timeout=30)
+    admin = KafkaAdminClient(bootstrap_servers=bootstrap_servers)
 
-    for topic, f in fs.items():
-        try:
-            f.result()
-            print(f"Deleted topic: {topic}")
-        except Exception as e:
-            print(f"Failed to delete topic {topic}: {e}")
+    try:
+        admin.delete_topics([topic_name])
+        print(f"Deleted topic: {topic_name}")
+    except UnknownTopicOrPartitionError:
+        print(f"Topic {topic_name} does not exist, skipping delete")
+    except Exception as e:
+        print(f"Failed to delete topic {topic_name}: {e}")
+    finally:
+        admin.close()
 
 
 def consume_messages(
@@ -65,56 +67,50 @@ def consume_messages(
     value_deserializer: str = "json",
 ) -> list[dict[str, Any]]:
     """Consume messages from Kafka topic."""
-    conf = {
-        "bootstrap.servers": bootstrap_servers,
-        "group.id": f"test-consumer-{int(time.time())}",
-        "auto.offset.reset": "earliest",
-        "enable.auto.commit": False,
-    }
-
-    consumer = Consumer(conf)
-    consumer.subscribe([topic])
+    consumer = KafkaConsumer(
+        topic,
+        bootstrap_servers=bootstrap_servers,
+        group_id=f"test-consumer-{int(time.time())}",
+        auto_offset_reset="earliest",
+        enable_auto_commit=False,
+        consumer_timeout_ms=timeout * 1000,
+    )
 
     messages = []
     start_time = time.time()
 
     try:
-        while len(messages) < expected_count:
+        for msg in consumer:
             if time.time() - start_time > timeout:
                 print(f"Timeout waiting for messages. Got {len(messages)}/{expected_count}")
                 break
 
-            msg = consumer.poll(timeout=1.0)
-
-            if msg is None:
-                continue
-            if msg.error():
-                if msg.error().code() == KafkaError._PARTITION_EOF:
-                    continue
-                else:
-                    print(f"Consumer error: {msg.error()}")
-                    break
-
             # Decode message
             try:
                 if value_deserializer == "json":
-                    value = json.loads(msg.value().decode("utf-8"))
+                    value = json.loads(msg.value.decode("utf-8"))
                 else:
-                    value = msg.value().decode("utf-8")
+                    value = msg.value.decode("utf-8")
 
                 messages.append(
                     {
                         "value": value,
-                        "key": msg.key().decode("utf-8") if msg.key() else None,
-                        "partition": msg.partition(),
-                        "offset": msg.offset(),
-                        "timestamp": msg.timestamp()[1] if msg.timestamp()[0] != -1 else None,
+                        "key": msg.key.decode("utf-8") if msg.key else None,
+                        "partition": msg.partition,
+                        "offset": msg.offset,
+                        "timestamp": msg.timestamp,
                     }
                 )
             except Exception as e:
                 print(f"Error decoding message: {e}")
-                messages.append({"raw": msg.value(), "error": str(e)})
+                messages.append({"raw": msg.value, "error": str(e)})
 
+            if len(messages) >= expected_count:
+                break
+
+    except StopIteration:
+        # Consumer timeout reached
+        pass
     finally:
         consumer.close()
 
@@ -270,8 +266,8 @@ def test_large_dataset():
             bootstrap_servers=bootstrap_servers,
             batch_size=100,
             producer_config={
-                "compression.type": "lz4",
-                "linger.ms": 10,
+                "compression_type": "lz4",
+                "linger_ms": 10,
             },
         )
         duration = time.time() - start
@@ -369,9 +365,9 @@ def test_producer_config():
             bootstrap_servers=bootstrap_servers,
             producer_config={
                 "acks": "all",
-                "compression.type": "gzip",
+                "compression_type": "gzip",
                 "retries": 3,
-                "linger.ms": 100,
+                "linger_ms": 100,
             },
         )
         print("Write completed with custom config")
@@ -491,8 +487,8 @@ def test_error_handling():
                 topic="test-error",
                 bootstrap_servers="invalid-broker:9092",
                 producer_config={
-                    "socket.timeout.ms": 1000,
-                    "message.timeout.ms": 2000,
+                    "request_timeout_ms": 1000,
+                    "max_block_ms": 2000,
                 },
             )
             raise AssertionError("Should have raised an error")
@@ -518,9 +514,10 @@ def run_all_tests():
     # Verify Kafka is accessible
     print("\nVerifying Kafka connection...")
     try:
-        admin = AdminClient({"bootstrap.servers": bootstrap_servers})
-        metadata = admin.list_topics(timeout=10)
-        print(f"Connected to Kafka (found {len(metadata.topics)} topics)")
+        admin = KafkaAdminClient(bootstrap_servers=bootstrap_servers)
+        topics = admin.list_topics()
+        admin.close()
+        print(f"Connected to Kafka (found {len(topics)} topics)")
     except Exception as e:
         print(f"Failed to connect to Kafka: {e}")
         print("\nMake sure Kafka is running:")
