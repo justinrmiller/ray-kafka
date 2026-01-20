@@ -25,7 +25,6 @@ from kafka.errors import TopicAlreadyExistsError, UnknownTopicOrPartitionError
 
 from src.kafka_datasink import write_kafka
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================
@@ -233,11 +232,12 @@ class TestBasicWrite:
 class TestKeyedMessages:
     """Tests for messages with keys."""
 
-    def test_write_with_keys(self, kafka_bootstrap_servers, kafka_topic_multi_partition, ray_context):
+    def test_write_with_keys(
+        self, kafka_bootstrap_servers, kafka_topic_multi_partition, ray_context
+    ):
         """Test write with message keys for partitioning."""
         data = [
-            {"user_id": f"user_{i}", "action": f"action_{i}", "timestamp": i}
-            for i in range(10)
+            {"user_id": f"user_{i}", "action": f"action_{i}", "timestamp": i} for i in range(10)
         ]
         ds = ray.data.from_items(data)
 
@@ -250,9 +250,7 @@ class TestKeyedMessages:
         )
 
         time.sleep(2)
-        messages = consume_messages(
-            kafka_topic_multi_partition, kafka_bootstrap_servers, len(data)
-        )
+        messages = consume_messages(kafka_topic_multi_partition, kafka_bootstrap_servers, len(data))
 
         assert len(messages) == len(data)
 
@@ -270,9 +268,7 @@ class TestKeyedMessages:
     ):
         """Test that same keys always go to same partition."""
         # Write multiple messages with same keys
-        data = [
-            {"user_id": "alice", "seq": i} for i in range(5)
-        ] + [
+        data = [{"user_id": "alice", "seq": i} for i in range(5)] + [
             {"user_id": "bob", "seq": i} for i in range(5)
         ]
         ds = ray.data.from_items(data)
@@ -285,9 +281,7 @@ class TestKeyedMessages:
         )
 
         time.sleep(2)
-        messages = consume_messages(
-            kafka_topic_multi_partition, kafka_bootstrap_servers, len(data)
-        )
+        messages = consume_messages(kafka_topic_multi_partition, kafka_bootstrap_servers, len(data))
 
         # Group by key and verify same partition
         key_partitions = {}
@@ -466,7 +460,6 @@ class TestLargeDatasets:
             lambda x: {"id": x["id"], "value": x["id"] * 2, "squared": x["id"] ** 2}
         )
 
-        start = time.time()
         write_kafka(
             dataset=ds,
             topic=kafka_topic,
@@ -477,7 +470,6 @@ class TestLargeDatasets:
                 "linger_ms": 10,
             },
         )
-        duration = time.time() - start
 
         # Sample verification
         time.sleep(3)
@@ -604,6 +596,7 @@ def run_all_tests():
             print(f"TEST FAILED: {name}")
             print(f"   Unexpected error: {e}")
             import traceback
+
             traceback.print_exc()
         finally:
             # Cleanup topic
@@ -675,7 +668,9 @@ def test_write_with_keys(bootstrap_servers, topic):
 def test_string_serializer(bootstrap_servers, topic):
     data = [{"id": 1, "message": "Hello"}, {"id": 2, "message": "World"}]
     ds = ray.data.from_items(data)
-    write_kafka(dataset=ds, topic=topic, bootstrap_servers=bootstrap_servers, value_serializer="string")
+    write_kafka(
+        dataset=ds, topic=topic, bootstrap_servers=bootstrap_servers, value_serializer="string"
+    )
     time.sleep(2)
     messages = consume_messages(topic, bootstrap_servers, len(data), value_deserializer="string")
     assert len(messages) == len(data)
@@ -684,14 +679,19 @@ def test_string_serializer(bootstrap_servers, topic):
 def test_bytes_serializer(bootstrap_servers, topic):
     data = [{"data": "binary data 1"}, {"data": "binary data 2"}]
     ds = ray.data.from_items(data)
-    write_kafka(dataset=ds, topic=topic, bootstrap_servers=bootstrap_servers, value_serializer="bytes")
+    write_kafka(
+        dataset=ds, topic=topic, bootstrap_servers=bootstrap_servers, value_serializer="bytes"
+    )
     time.sleep(2)
     messages = consume_messages(topic, bootstrap_servers, len(data), value_deserializer="bytes")
     assert len(messages) == len(data)
 
 
 def test_unicode_values(bootstrap_servers, topic):
-    data = [{"id": 1, "name": "日本語", "emoji": "🎉"}, {"id": 2, "name": "Ελληνικά", "emoji": "🚀"}]
+    data = [
+        {"id": 1, "name": "日本語", "emoji": "🎉"},
+        {"id": 2, "name": "Ελληνικά", "emoji": "🚀"},
+    ]
     ds = ray.data.from_items(data)
     write_kafka(dataset=ds, topic=topic, bootstrap_servers=bootstrap_servers)
     time.sleep(2)
@@ -752,7 +752,6 @@ def test_large_dataset(bootstrap_servers, topic):
         topic=topic,
         bootstrap_servers=bootstrap_servers,
         batch_size=100,
-        producer_config={"compression_type": "lz4"},
     )
     time.sleep(3)
     messages = consume_messages(topic, bootstrap_servers, 100, timeout=10)
@@ -786,6 +785,7 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n\nFatal error: {e}")
         import traceback
+
         traceback.print_exc()
         if ray.is_initialized():
             ray.shutdown()
