@@ -5,7 +5,7 @@ description = "Ray Kafka Datasink"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "kafka-python-ng>=2.2.2",
+    "kafka-python>=2.0.2",
     "pre-commit>=4.5.1",
     "ray[data]==2.52.1",
 ]
