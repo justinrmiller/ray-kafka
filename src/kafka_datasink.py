@@ -2,7 +2,8 @@ import json
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from confluent_kafka import KafkaError, KafkaException, Producer
+from kafka import KafkaProducer
+from kafka.errors import KafkaError, KafkaTimeoutError
 from ray.data import Dataset, Datasink
 from ray.data._internal.execution.interfaces import TaskContext
 from ray.data.block import Block, BlockAccessor
@@ -10,7 +11,7 @@ from ray.data.block import Block, BlockAccessor
 
 class KafkaDatasink(Datasink):
     """
-    Ray Data sink for writing to Apache Kafka topics using confluent-kafka.
+    Ray Data sink for writing to Apache Kafka topics using kafka-python.
 
     Writes blocks of data to Kafka with configurable serialization
     and producer settings.
@@ -34,9 +35,9 @@ class KafkaDatasink(Datasink):
             bootstrap_servers: Comma-separated Kafka broker addresses (e.g., 'localhost:9092')
             key_field: Optional field name to use as message key
             value_serializer: Serialization format ('json', 'string', or 'bytes')
-            producer_config: Additional Kafka producer configuration (librdkafka format)
-            batch_size: Number of records to batch before polling
-            delivery_callback: Optional callback for delivery reports
+            producer_config: Additional Kafka producer configuration (kafka-python format)
+            batch_size: Number of records to batch before flushing
+            delivery_callback: Optional callback for delivery reports (called with metadata or exception)
         """
         self.topic = topic
         self.bootstrap_servers = bootstrap_servers
@@ -81,10 +82,10 @@ class KafkaDatasink(Datasink):
                 key = str(key_value).encode("utf-8")
         return key
 
-    def _default_delivery_callback(self, err: KafkaError | None, msg: Any) -> None:
+    def _default_delivery_callback(self, metadata: Any = None, exception: Exception | None = None) -> None:
         """Default delivery report callback."""
-        if err is not None:
-            raise KafkaException(f"Message delivery failed: {err}")
+        if exception is not None:
+            raise KafkaError(f"Message delivery failed: {exception}")
 
     def write(
         self,
@@ -102,12 +103,14 @@ class KafkaDatasink(Datasink):
             Write statistics (total records written)
         """
         # Create producer with config
-        config = {"bootstrap.servers": self.bootstrap_servers, **self.producer_config}
-
-        producer = Producer(config)
+        producer = KafkaProducer(
+            bootstrap_servers=self.bootstrap_servers,
+            **self.producer_config,
+        )
         total_records = 0
         batch_count = 0
         failed_messages = 0
+        futures = []
 
         # Use provided callback or default
         callback = self.delivery_callback or self._default_delivery_callback
@@ -126,33 +129,46 @@ class KafkaDatasink(Datasink):
 
                     # Produce to Kafka
                     try:
-                        producer.produce(topic=self.topic, value=value, key=key, callback=callback)
+                        future = producer.send(self.topic, value=value, key=key)
+                        # Add callback if provided
+                        future.add_callback(lambda m: callback(metadata=m))
+                        future.add_errback(lambda e: callback(exception=e))
+                        futures.append(future)
                         total_records += 1
                         batch_count += 1
 
                     except BufferError:
-                        # Queue is full, wait for messages to be delivered
-                        producer.poll(1.0)
-                        # Retry
-                        producer.produce(topic=self.topic, value=value, key=key, callback=callback)
+                        # Queue is full, flush and retry
+                        producer.flush(timeout=1.0)
+                        future = producer.send(self.topic, value=value, key=key)
+                        future.add_callback(lambda m: callback(metadata=m))
+                        future.add_errback(lambda e: callback(exception=e))
+                        futures.append(future)
                         total_records += 1
                         batch_count += 1
 
-                    # Poll periodically for delivery reports
+                    # Flush periodically to manage memory
                     if batch_count >= self.batch_size:
-                        producer.poll(0)
+                        producer.flush(timeout=10.0)
                         batch_count = 0
 
             # Final flush to ensure all messages are sent
-            remaining = producer.flush(timeout=30.0)
-            if remaining > 0:
-                failed_messages = remaining
+            producer.flush(timeout=30.0)
 
-        except KafkaException as e:
+            # Check for any failed futures
+            for future in futures:
+                try:
+                    future.get(timeout=0)  # Non-blocking check since we already flushed
+                except Exception:
+                    failed_messages += 1
+
+        except KafkaTimeoutError as e:
+            raise RuntimeError(f"Failed to write to Kafka: {e}") from e
+        except KafkaError as e:
             raise RuntimeError(f"Failed to write to Kafka: {e}") from e
         finally:
-            # Flush any remaining messages
-            producer.flush()
+            # Close the producer
+            producer.close(timeout=5.0)
 
         return {"total_records": total_records, "failed_messages": failed_messages}
 
@@ -176,8 +192,8 @@ def write_kafka(
         bootstrap_servers: Comma-separated Kafka broker addresses
         key_field: Optional field name to use as message key
         value_serializer: Serialization format ('json', 'string', or 'bytes')
-        producer_config: Additional Kafka producer configuration (librdkafka format)
-        batch_size: Number of records to batch before polling
+        producer_config: Additional Kafka producer configuration (kafka-python format)
+        batch_size: Number of records to batch before flushing
         delivery_callback: Optional callback for delivery reports
 
     Returns:

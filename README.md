@@ -1,8 +1,8 @@
 # ray-kafka
 
-A Ray Data sink for writing to Apache Kafka using confluent-kafka.
+A Ray Data sink for writing to Apache Kafka using kafka-python.
 
-This library provides a `KafkaDatasink` that integrates Ray's distributed data processing with Kafka's streaming platform, leveraging the high-performance librdkafka C library for efficient writes.
+This library provides a `KafkaDatasink` that integrates Ray's distributed data processing with Kafka's streaming platform, providing a pure Python implementation for efficient writes.
 
 ## Features
 
@@ -11,8 +11,8 @@ This library provides a `KafkaDatasink` that integrates Ray's distributed data p
 - Message key extraction for partitioning and compaction
 - Asynchronous delivery with customizable callbacks
 - Buffer overflow handling with automatic backpressure
-- Configurable batching and polling strategies
-- Full librdkafka configuration support
+- Configurable batching and flushing strategies
+- Full kafka-python configuration support
 
 ## Requirements
 
@@ -54,11 +54,11 @@ write_kafka(
 
 1. **Per-Task Producers**: Each Ray task creates its own Kafka producer to avoid connection pool contention.
 
-2. **Asynchronous Writes**: Messages are produced asynchronously using `producer.produce()` with delivery callbacks.
+2. **Asynchronous Writes**: Messages are produced asynchronously using `producer.send()` with future-based delivery tracking.
 
-3. **Buffer Management**: When the producer queue fills, the sink polls for delivery reports and retries.
+3. **Buffer Management**: When the producer queue fills, the sink flushes pending messages and retries.
 
-4. **Batched Polling**: Delivery reports are polled every N records (configurable via `batch_size`) to balance throughput and responsiveness.
+4. **Batched Flushing**: Messages are flushed every N records (configurable via `batch_size`) to balance throughput and memory usage.
 
 5. **Final Flush**: A blocking flush ensures all messages are delivered before the task completes.
 
@@ -74,8 +74,8 @@ sink = KafkaDatasink(
     bootstrap_servers="localhost:9092",
     key_field="id",                    # Optional: field to use as message key
     value_serializer="json",           # "json", "string", or "bytes"
-    producer_config={},                # Additional librdkafka configuration
-    batch_size=100,                    # Records to batch before polling
+    producer_config={},                # Additional kafka-python configuration
+    batch_size=100,                    # Records to batch before flushing
     delivery_callback=None,            # Custom delivery report callback
 )
 
@@ -110,8 +110,8 @@ result = write_kafka(
 | `bootstrap_servers` | str | required | Comma-separated broker addresses |
 | `key_field` | str \| None | None | Field name to use as message key |
 | `value_serializer` | str | "json" | Serialization format: "json", "string", or "bytes" |
-| `producer_config` | dict \| None | None | Additional librdkafka configuration |
-| `batch_size` | int | 100 | Number of records before polling for delivery reports |
+| `producer_config` | dict \| None | None | Additional kafka-python configuration |
+| `batch_size` | int | 100 | Number of records before flushing |
 | `delivery_callback` | Callable \| None | None | Custom callback for delivery reports |
 
 ## Configuration Examples
@@ -125,11 +125,10 @@ write_kafka(
     bootstrap_servers="broker1:9092,broker2:9092",
     batch_size=500,
     producer_config={
-        "acks": "1",
-        "compression.type": "lz4",
-        "linger.ms": 100,
-        "batch.size": 1000000,
-        "queue.buffering.max.messages": 100000,
+        "acks": 1,
+        "compression_type": "lz4",
+        "linger_ms": 100,
+        "batch_size": 1000000,
     },
 )
 ```
@@ -143,10 +142,8 @@ write_kafka(
     bootstrap_servers="broker1:9092,broker2:9092",
     producer_config={
         "acks": "all",
-        "enable.idempotence": True,
-        "max.in.flight.requests.per.connection": 5,
         "retries": 10,
-        "retry.backoff.ms": 100,
+        "retry_backoff_ms": 100,
     },
 )
 ```
@@ -159,10 +156,10 @@ write_kafka(
     topic="secure-topic",
     bootstrap_servers="broker:9093",
     producer_config={
-        "security.protocol": "SSL",
-        "ssl.ca.location": "/path/to/ca-cert.pem",
-        "ssl.certificate.location": "/path/to/client-cert.pem",
-        "ssl.key.location": "/path/to/client-key.pem",
+        "security_protocol": "SSL",
+        "ssl_cafile": "/path/to/ca-cert.pem",
+        "ssl_certfile": "/path/to/client-cert.pem",
+        "ssl_keyfile": "/path/to/client-key.pem",
     },
 )
 ```
@@ -175,10 +172,10 @@ write_kafka(
     topic="authenticated-topic",
     bootstrap_servers="broker:9092",
     producer_config={
-        "security.protocol": "SASL_SSL",
-        "sasl.mechanism": "PLAIN",
-        "sasl.username": "your-username",
-        "sasl.password": "your-password",
+        "security_protocol": "SASL_SSL",
+        "sasl_mechanism": "PLAIN",
+        "sasl_username": "your-username",
+        "sasl_password": "your-password",
     },
 )
 ```
@@ -186,11 +183,11 @@ write_kafka(
 ### Custom Delivery Callback
 
 ```python
-def track_delivery(err, msg):
-    if err:
-        print(f"Delivery failed: {err}")
+def track_delivery(metadata=None, exception=None):
+    if exception:
+        print(f"Delivery failed: {exception}")
     else:
-        print(f"Delivered to {msg.topic()} [{msg.partition()}]")
+        print(f"Delivered to {metadata.topic} [{metadata.partition}]")
 
 write_kafka(
     dataset=ds,
