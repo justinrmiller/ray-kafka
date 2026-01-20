@@ -174,8 +174,8 @@ write_kafka(
     producer_config={
         "security_protocol": "SASL_SSL",
         "sasl_mechanism": "PLAIN",
-        "sasl_plain_username": "your-username",
-        "sasl_plain_password": "your-password",
+        "sasl_username": "your-username",
+        "sasl_password": "your-password",
     },
 )
 ```
