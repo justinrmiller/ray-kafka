@@ -1,3 +1,5 @@
+# WARNING: This repo will no longer be maintained as we're migrating this codd to the Ray data repo itself. I will delete this repo once that has been released.
+
 # ray-kafka
 
 A Ray Data sink for writing to Apache Kafka using kafka-python.
